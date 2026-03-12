@@ -70,12 +70,19 @@ def gguf_repo_has_config(repo_id: str) -> bool:
 
 
 def _is_local_path(model_id: str) -> bool:
-    """Return True if *model_id* refers to an existing directory on the local filesystem.
+    """Return True if *model_id* refers to a local filesystem path.
 
     A bare quantization suffix (e.g. ``/path/to/repo:Q4_K_M``) is stripped before
     the existence check so that GGUF-style local paths are handled correctly.
+
+    Paths that start with ``/``, ``./``, or ``../`` are unconditionally treated as
+    local regardless of whether they are accessible at detection time. This prevents
+    inaccessible-but-valid absolute paths from falling through to HuggingFace Hub
+    code and raising an ``HFValidationError``.
     """
     base = model_id.split(":")[0]
+    if base.startswith("/") or base.startswith("./") or base.startswith("../"):
+        return True
     p = Path(base)
     return p.exists() and p.is_dir()
 
@@ -85,6 +92,16 @@ def get_model_config(model_id: str) -> Tuple[Dict[str, Any], str]:
     if _is_local_path(model_id):
         base = model_id.split(":")[0]
         local_dir = Path(base).resolve()
+        if not local_dir.exists():
+            raise ValueError(
+                f"Local path '{local_dir}' does not exist. "
+                f"Please verify the path and try again."
+            )
+        if not local_dir.is_dir():
+            raise ValueError(
+                f"Local path '{local_dir}' is not a directory. "
+                f"Please provide the model directory path."
+            )
         config_file = local_dir / "config.json"
         if not config_file.exists():
             raise ValueError(
