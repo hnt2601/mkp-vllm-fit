@@ -2,8 +2,26 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 
-from huggingface_hub import hf_hub_download, HfApi
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError, HFValidationError
+
+
+def _is_local_path(model_id: str) -> bool:
+    """Return True if *model_id* refers to a local filesystem path.
+
+    A bare quantization suffix (e.g. ``/path/to/repo:Q4_K_M``) is stripped before
+    the existence check so that GGUF-style local paths are handled correctly.
+
+    Paths that start with ``/``, ``./``, or ``../`` are unconditionally treated as
+    local regardless of whether they are accessible at detection time. This prevents
+    inaccessible-but-valid absolute paths from falling through to HuggingFace Hub
+    code and raising an ``HFValidationError``.
+    """
+    base = model_id.split(":")[0]
+    if base.startswith("/") or base.startswith("./") or base.startswith("../"):
+        return True
+    p = Path(base)
+    return p.exists() and p.is_dir()
 
 
 def is_gguf_model(model_id: str) -> bool:
@@ -31,7 +49,14 @@ def try_extract_base_model(repo_id: str) -> list:
 
 
 def try_find_non_gguf_base(repo_id: str) -> Optional[str]:
-    """Try to find a non-GGUF base repo for tokenizer files."""
+    """Try to find a non-GGUF base repo for tokenizer files.
+
+    Returns ``None`` immediately for local filesystem paths — there is no
+    HuggingFace Hub base model to look up for a local directory.
+    """
+    if _is_local_path(repo_id):
+        return None
+
     base_candidates = [
         repo_id.replace("-GGUF", ""),
         repo_id.replace("-GGML", ""),
@@ -50,14 +75,22 @@ def try_find_non_gguf_base(repo_id: str) -> Optional[str]:
                     force_download=False,
                 )
                 return candidate
-            except EntryNotFoundError:
+            except (EntryNotFoundError, HFValidationError):
                 continue
 
     return None
 
 
 def gguf_repo_has_config(repo_id: str) -> bool:
-    """Check if the GGUF repo has its own config.json."""
+    """Check if the GGUF repo has its own config.json.
+
+    For local filesystem paths, checks whether ``config.json`` exists in the
+    directory instead of querying HuggingFace Hub.
+    """
+    if _is_local_path(repo_id):
+        base = repo_id.split(":")[0]
+        return (Path(base) / "config.json").exists()
+
     try:
         hf_hub_download(
             repo_id=repo_id,
@@ -65,26 +98,8 @@ def gguf_repo_has_config(repo_id: str) -> bool:
             force_download=False,
         )
         return True
-    except EntryNotFoundError:
+    except (EntryNotFoundError, HFValidationError):
         return False
-
-
-def _is_local_path(model_id: str) -> bool:
-    """Return True if *model_id* refers to a local filesystem path.
-
-    A bare quantization suffix (e.g. ``/path/to/repo:Q4_K_M``) is stripped before
-    the existence check so that GGUF-style local paths are handled correctly.
-
-    Paths that start with ``/``, ``./``, or ``../`` are unconditionally treated as
-    local regardless of whether they are accessible at detection time. This prevents
-    inaccessible-but-valid absolute paths from falling through to HuggingFace Hub
-    code and raising an ``HFValidationError``.
-    """
-    base = model_id.split(":")[0]
-    if base.startswith("/") or base.startswith("./") or base.startswith("../"):
-        return True
-    p = Path(base)
-    return p.exists() and p.is_dir()
 
 
 def get_model_config(model_id: str) -> Tuple[Dict[str, Any], str]:
@@ -133,7 +148,7 @@ def get_model_config(model_id: str) -> Tuple[Dict[str, Any], str]:
 
                     if not has_config and candidate != repo_id:
                         return config, candidate
-            except EntryNotFoundError:
+            except (EntryNotFoundError, HFValidationError):
                 continue
 
     for candidate in try_extract_base_model(repo_id):
@@ -146,7 +161,7 @@ def get_model_config(model_id: str) -> Tuple[Dict[str, Any], str]:
             with open(config_path, "r") as f:
                 config = json.load(f)
                 return config, candidate
-        except EntryNotFoundError:
+        except (EntryNotFoundError, HFValidationError):
             continue
 
     raise ValueError(
