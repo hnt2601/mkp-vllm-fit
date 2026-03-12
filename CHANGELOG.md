@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.0.1 (2026-03-12)
+
+### Bug Fixes
+
+- Guard all HF Hub calls against local path strings
+  ([`068a20c`](https://github.com/hnt2601/mkp-vllm-fit/commit/068a20c95a622bd0294722abae241d42cd9959ac))
+
+
 ## v0.0.0 (2026-03-12)
 
 - Initial Release
