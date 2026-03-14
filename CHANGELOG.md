@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.0.2 (2026-03-14)
+
+### Bug Fixes
+
+- Handle timeout gracefully in profiling and scale timeout by model size
+  ([`3afc8b9`](https://github.com/hnt2601/mkp-vllm-fit/commit/3afc8b9b9449d6074658fd11deac6fabbdff4ba8))
+
+
 ## v0.0.1 (2026-03-12)
 
 ### Bug Fixes
