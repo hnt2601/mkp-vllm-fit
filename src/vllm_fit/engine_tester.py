@@ -99,6 +99,7 @@ def _binary_search_max_num_seqs(
     max_model_len = fixed_params["max_model_len"]
     tensor_parallel_size = fixed_params["tensor_parallel_size"]
     enforce_eager = fixed_params["enforce_eager"]
+    timeout = fixed_params.get("timeout", 300)
 
     low = 1
     high = fixed_params["max_num_seqs"] * 4
@@ -112,7 +113,7 @@ def _binary_search_max_num_seqs(
                 f"  Binary search Seqs: testing {mid} (range {low}-{high})"
             )
 
-        success, timeout = _test_configuration(
+        success, timed_out = _test_configuration(
             model_id,
             gpu_memory_utilization,
             max_model_len,
@@ -120,9 +121,10 @@ def _binary_search_max_num_seqs(
             mid,
             enforce_eager,
             gpu_ids,
+            timeout=timeout,
         )
 
-        if success and not timeout:
+        if success and not timed_out:
             best = mid
             low = mid + 1
         else:
@@ -141,6 +143,7 @@ def _binary_search_max_model_len(
     tensor_parallel_size = fixed_params["tensor_parallel_size"]
     max_num_seqs = fixed_params["max_num_seqs"]
     enforce_eager = fixed_params["enforce_eager"]
+    timeout = fixed_params.get("timeout", 300)
 
     low = fixed_params["max_model_len"]
     high = max(32768, fixed_params["max_model_len"] * 2)
@@ -154,7 +157,7 @@ def _binary_search_max_model_len(
                 f"  Binary search Len: testing {mid} (range {low}-{high})"
             )
 
-        success, timeout = _test_configuration(
+        success, timed_out = _test_configuration(
             model_id,
             gpu_memory_utilization,
             mid,
@@ -162,9 +165,10 @@ def _binary_search_max_model_len(
             max_num_seqs,
             enforce_eager,
             gpu_ids,
+            timeout=timeout,
         )
 
-        if success and not timeout:
+        if success and not timed_out:
             best = mid
             low = mid + 1
         else:
@@ -186,6 +190,12 @@ def profile_parameters(
     enforce_eager = False
     total_attempts = 0
 
+    # Scale timeout by estimated model weight size so large models get enough
+    # time to load weights, compile CUDA kernels, and initialize NCCL.
+    # Rule of thumb: 15 s per GB of weights, minimum 5 minutes.
+    weights_gb = initial_params.get("estimated_weights_memory_gb", 10.0)
+    timeout = max(300, int(weights_gb * 15))
+
     old_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
     def _log_attempt(msg: str):
@@ -199,7 +209,7 @@ def profile_parameters(
             f"Mem={gpu_memory_utilization:.2f} • Len={max_model_len} • TP={tensor_parallel_size} • Seqs={max_num_seqs} • Eager={'ON' if enforce_eager else 'OFF'}"
         )
 
-        success, timeout = _test_configuration(
+        success, timed_out = _test_configuration(
             model_id,
             gpu_memory_utilization,
             max_model_len,
@@ -207,9 +217,26 @@ def profile_parameters(
             max_num_seqs,
             enforce_eager,
             gpu_ids,
+            timeout=timeout,
         )
 
         if not success:
+            if timed_out:
+                if progress_callback:
+                    progress_callback(
+                        f"[red]✗ Initial config timed out after {timeout}s — model may need longer to load[/red]"
+                    )
+                return {
+                    "gpu_memory_utilization": gpu_memory_utilization,
+                    "max_model_len": max_model_len,
+                    "tensor_parallel_size": tensor_parallel_size,
+                    "max_num_seqs": max_num_seqs,
+                    "enforce_eager": enforce_eager,
+                    "profiling_success": False,
+                    "timed_out": True,
+                    "attempts_made": total_attempts,
+                }
+
             if progress_callback:
                 progress_callback("[red]✗ Initial config failed[/red]")
 
@@ -218,7 +245,7 @@ def profile_parameters(
                 f"Enabling enforce_eager: Mem={gpu_memory_utilization:.2f} • Len={max_model_len} • TP={tensor_parallel_size} • Seqs={max_num_seqs} • Eager=ON"
             )
 
-            success, timeout = _test_configuration(
+            success, timed_out = _test_configuration(
                 model_id,
                 gpu_memory_utilization,
                 max_model_len,
@@ -226,9 +253,26 @@ def profile_parameters(
                 max_num_seqs,
                 enforce_eager,
                 gpu_ids,
+                timeout=timeout,
             )
 
         if not success:
+            if timed_out:
+                if progress_callback:
+                    progress_callback(
+                        f"[red]✗ Config timed out after {timeout}s — not reducing parameters[/red]"
+                    )
+                return {
+                    "gpu_memory_utilization": gpu_memory_utilization,
+                    "max_model_len": max_model_len,
+                    "tensor_parallel_size": tensor_parallel_size,
+                    "max_num_seqs": max_num_seqs,
+                    "enforce_eager": enforce_eager,
+                    "profiling_success": False,
+                    "timed_out": True,
+                    "attempts_made": total_attempts,
+                }
+
             if progress_callback:
                 progress_callback("[yellow]Finding baseline configuration...[/yellow]")
 
@@ -265,7 +309,7 @@ def profile_parameters(
                     f"Baseline: Mem={gpu_memory_utilization:.2f} • Len={max_model_len} • TP={tensor_parallel_size} • Seqs={max_num_seqs} • Eager=ON"
                 )
 
-                success, timeout = _test_configuration(
+                success, timed_out = _test_configuration(
                     model_id,
                     gpu_memory_utilization,
                     max_model_len,
@@ -273,7 +317,17 @@ def profile_parameters(
                     max_num_seqs,
                     enforce_eager,
                     gpu_ids,
+                    timeout=timeout,
                 )
+
+                # A timeout means the model simply needs more time, not less
+                # memory — stop reducing parameters immediately.
+                if timed_out:
+                    if progress_callback:
+                        progress_callback(
+                            f"[red]  Timed out after {timeout}s — stopping baseline search[/red]"
+                        )
+                    break
 
         if not success:
             if progress_callback:
@@ -301,6 +355,7 @@ def profile_parameters(
             "tensor_parallel_size": tensor_parallel_size,
             "max_num_seqs": max_num_seqs,
             "enforce_eager": enforce_eager,
+            "timeout": timeout,
         }
 
         max_num_seqs = _binary_search_max_num_seqs(

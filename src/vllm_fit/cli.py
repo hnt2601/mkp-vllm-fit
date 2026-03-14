@@ -194,7 +194,14 @@ def profile(
     print()
 
     if not params.get("profiling_success", False):
-        print("[red]⚠️  Profiling could not find a successful configuration[/red]")
+        if params.get("timed_out", False):
+            print("[red]⚠️  Profiling timed out — model took too long to initialize[/red]")
+            print()
+            print("[yellow]Tip:[/yellow] The model loaded but exceeded the per-attempt timeout.")
+            print("     Try running [bold]vllm-fit recommend[/bold] instead for a static estimate,")
+            print("     or launch vLLM directly with the parameters shown below.")
+        else:
+            print("[red]⚠️  Profiling could not find a successful configuration[/red]")
         print()
         print("[yellow]Summary:[/yellow]")
         print(f"  • Attempted {params.get('attempts_made', '?')} configurations")
