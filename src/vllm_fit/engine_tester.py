@@ -240,7 +240,6 @@ def profile_parameters(
             if progress_callback:
                 progress_callback("[red]✗ Initial config failed[/red]")
 
-            enforce_eager = True
             _log_attempt(
                 f"Enabling enforce_eager: Mem={gpu_memory_utilization:.2f} • Len={max_model_len} • TP={tensor_parallel_size} • Seqs={max_num_seqs} • Eager=ON"
             )
